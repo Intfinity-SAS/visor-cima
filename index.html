@@ -42,7 +42,14 @@
   .over canvas, .over .big { width:100%; height:100%; display:block; touch-action:none; }
   .over .big { object-fit:contain; }
   .close { position:absolute; top:max(12px,env(safe-area-inset-top)); right:12px; z-index:2; font-size:16px; font-weight:600; padding:10px 14px; border-radius:20px; border:0; background:rgba(255,255,255,.92); color:var(--on-accent); }
-  .hint { position:absolute; left:0; right:0; bottom:max(16px,env(safe-area-inset-bottom)); text-align:center; color:#fff; font-size:14px; text-shadow:0 1px 3px #000; pointer-events:none; }
+  .hint { position:absolute; left:0; right:0; bottom:calc(max(16px,env(safe-area-inset-bottom)) + 62px); text-align:center; color:#fff; font-size:14px; text-shadow:0 1px 3px #000; pointer-events:none; padding:0 16px; }
+  /* Marco 4:3 de "Guardar esta vista": lo de adentro es lo que se guarda; afuera, más oscuro. */
+  .frame43 { display:none; position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:min(92vw, calc((100dvh - 190px) * 4 / 3)); aspect-ratio:4/3; border:2px solid rgba(255,255,255,.9); border-radius:6px; box-shadow:0 0 0 200vmax rgba(10,18,19,.45); pointer-events:none; }
+  .panobar { display:none; position:absolute; left:16px; right:16px; bottom:max(14px,env(safe-area-inset-bottom)); gap:8px; justify-content:center; }
+  .panobar button { flex:1; max-width:220px; font:inherit; font-size:15px; font-weight:700; padding:12px 10px; border-radius:12px; border:0; cursor:pointer; background:var(--accent); color:var(--on-accent); }
+  .panobar button#panoFull { background:rgba(255,255,255,.16); color:#fff; }
+  #pano.ready .frame43 { display:block; }
+  #pano.ready .panobar { display:flex; }
 </style>
 </head>
 <body>
@@ -58,7 +65,11 @@
 <footer><img src="logo.jpg" alt="">Gracias por visitar La Cima de la 13</footer>
 
 <div class="over" id="photo"><button class="close" data-close>Cerrar</button><img class="big" alt=""></div>
-<div class="over" id="pano"><button class="close" data-close>Cerrar</button><canvas></canvas><div class="hint" id="panoHint"></div></div>
+<div class="over" id="pano"><button class="close" data-close>Cerrar</button><canvas></canvas>
+  <div class="frame43" id="panoFrame"></div>
+  <div class="hint" id="panoHint"></div>
+  <div class="panobar"><button id="panoView" data-label="Guardar esta vista">Guardar esta vista</button><button id="panoFull" data-label="Descargar la 360">Descargar la 360</button></div>
+</div>
 
 <script src="config.js"></script>
 <script>
@@ -111,7 +122,7 @@ function render(files) {
       const b = document.createElement('button')
       b.className = 'b360'
       b.textContent = 'Ver en 360°'
-      b.onclick = () => openPano(panos[name])
+      b.onclick = () => openPano(panos[name], name)
       card.querySelector('.acts').prepend(b)
     }
   }
@@ -171,38 +182,47 @@ async function poll() {
 // computador se descarga directo. Si algo falla, se abre el enlace de Drive.
 const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
 const blobs = new Map() // id → File ya bajado (el segundo toque no vuelve a bajarlo)
+async function fetchFile(id, filename) {
+  let file = blobs.get(id)
+  if (!file) {
+    const r = await fetch(`${CFG.api}/files/${id}?alt=media&key=${encodeURIComponent(CFG.apiKey)}`)
+    if (!r.ok) throw new Error('HTTP ' + r.status)
+    file = new File([await r.blob()], filename, { type: 'image/jpeg' })
+    blobs.set(id, file)
+  }
+  return file
+}
+
+// saveFile deja el archivo en el celular (o el computador) y lo dice en el botón.
+async function saveFile(btn, file, label) {
+  if (isIOS && navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file] })
+      btn.textContent = '¡Guardada!'
+    } catch (e) {
+      // Safari solo abre el menú justo después de un toque: si preparar el
+      // archivo tardó, hace falta tocar otra vez (ya está listo: es instantáneo).
+      btn.textContent = e.name === 'AbortError' ? label : 'Toca para guardar en Fotos'
+    }
+  } else {
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(file)
+    a.download = file.name
+    document.body.append(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000)
+    btn.textContent = '¡Descargada!'
+  }
+}
+
 async function download(btn, id, name) {
   if (btn.disabled) return
   const label = 'Descargar'
-  let file = blobs.get(id)
   try {
-    if (!file) {
-      btn.disabled = true
-      btn.textContent = 'Descargando…'
-      const r = await fetch(`${CFG.api}/files/${id}?alt=media&key=${encodeURIComponent(CFG.apiKey)}`)
-      if (!r.ok) throw new Error('HTTP ' + r.status)
-      file = new File([await r.blob()], `La-Cima-de-la-13-${name}.jpg`, { type: 'image/jpeg' })
-      blobs.set(id, file)
-    }
-    if (isIOS && navigator.canShare && navigator.canShare({ files: [file] })) {
-      try {
-        await navigator.share({ files: [file] })
-        btn.textContent = '¡Guardada!'
-      } catch (e) {
-        // Safari solo abre el menú justo después de un toque: si la descarga
-        // tardó, hace falta tocar otra vez (ya está bajada: es instantáneo).
-        btn.textContent = e.name === 'AbortError' ? label : 'Toca para guardar en Fotos'
-      }
-    } else {
-      const a = document.createElement('a')
-      a.href = URL.createObjectURL(file)
-      a.download = file.name
-      document.body.append(a)
-      a.click()
-      a.remove()
-      setTimeout(() => URL.revokeObjectURL(a.href), 60000)
-      btn.textContent = '¡Descargada!'
-    }
+    if (!blobs.has(id)) { btn.disabled = true; btn.textContent = 'Descargando…' }
+    const file = await fetchFile(id, `La-Cima-de-la-13-${name}.jpg`)
+    await saveFile(btn, file, label)
   } catch (e) {
     btn.textContent = label
     location.href = CFG.download + id // respaldo: el enlace de Drive
@@ -328,21 +348,55 @@ const pano = (() => {
   c.addEventListener('wheel', (e) => { e.preventDefault(); view.fov = Math.max(30, Math.min(120, view.fov * Math.exp(e.deltaY * 0.001))); dirty = true }, { passive: false })
   c.addEventListener('dblclick', () => { view = { ...START }; vel.yaw = vel.pitch = 0; dirty = true })
 
+  // snapshot: la parte de la 360 que está dentro del marco 4:3 (#panoFrame),
+  // como foto JPEG. Se dibuja aparte (framebuffer) a la resolución que da la
+  // 360 en ese recorte, no a la de la pantalla.
+  let texW = 0
+  function snapshot() {
+    if (!ready) return Promise.resolve(null)
+    const fr = $('#panoFrame').getBoundingClientRect(), cr = c.getBoundingClientRect()
+    const tanHalf = Math.tan(view.fov * Math.PI / 360) * (fr.height / cr.height) // el marco ve menos que la pantalla
+    const horiz = 2 * Math.atan(tanHalf * 4 / 3) * 180 / Math.PI // grados que cubre a lo ancho
+    const maxDim = Math.min(g.getParameter(g.MAX_RENDERBUFFER_SIZE), g.getParameter(g.MAX_VIEWPORT_DIMS)[0], 4096)
+    const W = Math.max(1200, Math.min(maxDim, Math.round(texW * horiz / 360 * 1.25 / 4) * 4)), H = Math.round(W * 3 / 4)
+    const rt = g.createTexture(); g.bindTexture(g.TEXTURE_2D, rt)
+    g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, W, H, 0, g.RGBA, g.UNSIGNED_BYTE, null)
+    for (const [k, v] of [[g.TEXTURE_MIN_FILTER, g.LINEAR], [g.TEXTURE_WRAP_S, g.CLAMP_TO_EDGE], [g.TEXTURE_WRAP_T, g.CLAMP_TO_EDGE]]) g.texParameteri(g.TEXTURE_2D, k, v)
+    const fb = g.createFramebuffer(); g.bindFramebuffer(g.FRAMEBUFFER, fb)
+    g.framebufferTexture2D(g.FRAMEBUFFER, g.COLOR_ATTACHMENT0, g.TEXTURE_2D, rt, 0)
+    g.bindTexture(g.TEXTURE_2D, tex)
+    g.viewport(0, 0, W, H)
+    g.uniform1f(U.yaw, view.yaw * Math.PI / 180); g.uniform1f(U.pitch, view.pitch * Math.PI / 180)
+    g.uniform1f(U.tanHalf, tanHalf); g.uniform1f(U.aspect, 4 / 3)
+    g.drawArrays(g.TRIANGLE_STRIP, 0, 4)
+    const px = new Uint8Array(W * H * 4)
+    g.readPixels(0, 0, W, H, g.RGBA, g.UNSIGNED_BYTE, px)
+    g.bindFramebuffer(g.FRAMEBUFFER, null); g.deleteFramebuffer(fb); g.deleteTexture(rt)
+    dirty = true
+    const cv = document.createElement('canvas'); cv.width = W; cv.height = H
+    const ctx = cv.getContext('2d'), img = ctx.createImageData(W, H)
+    for (let y = 0; y < H; y++) img.data.set(px.subarray((H - 1 - y) * W * 4, (H - y) * W * 4), y * W * 4) // WebGL lee de abajo hacia arriba
+    ctx.putImageData(img, 0, 0)
+    return new Promise((res) => cv.toBlob(res, 'image/jpeg', 0.92))
+  }
+
   let gen = 0
   return {
+    snapshot,
     async open(id) {
       const my = ++gen
       const hint = $('#panoHint')
       $('#pano').classList.add('on')
+      $('#pano').classList.remove('ready')
       ready = false
       if (!init()) { hint.textContent = 'Este celular no puede mostrar la 360.'; return }
       resize()
       cancelAnimationFrame(raf); raf = requestAnimationFrame(draw)
       hint.textContent = 'Cargando la 360…'
       try {
-        const r = await fetch(`${CFG.api}/files/${id}?alt=media&key=${encodeURIComponent(CFG.apiKey)}`)
-        if (!r.ok) throw new Error('HTTP ' + r.status)
-        const bmp = await createImageBitmap(await r.blob())
+        // El archivo queda guardado: "Descargar la 360" no lo vuelve a bajar.
+        const file = await fetchFile(id, `La-Cima-de-la-13-${panoName}-360.jpg`)
+        const bmp = await createImageBitmap(file)
         if (my !== gen) return
         let pic = bmp
         const max = g.getParameter(g.MAX_TEXTURE_SIZE)
@@ -353,8 +407,10 @@ const pano = (() => {
         }
         g.bindTexture(g.TEXTURE_2D, tex)
         g.texImage2D(g.TEXTURE_2D, 0, g.RGB, g.RGB, g.UNSIGNED_BYTE, pic)
+        texW = pic.width
         view = { ...START }; vel.yaw = vel.pitch = 0; ready = true; dirty = true
-        hint.textContent = 'Arrastra para mirar alrededor · pellizca para acercar'
+        $('#pano').classList.add('ready')
+        hint.textContent = 'Arrastra y pellizca para encuadrar lo que quieras dentro del marco'
       } catch (e) {
         if (my === gen) hint.textContent = 'No se pudo cargar la 360. Inténtalo de nuevo.'
       }
@@ -362,7 +418,50 @@ const pano = (() => {
     stop() { gen++; cancelAnimationFrame(raf); ready = false },
   }
 })()
-const openPano = (id) => pano.open(id)
+// La 360 abierta: su id en Drive y el nombre de la foto ("foto-01").
+let panoId = '', panoName = ''
+const openPano = (id, name) => {
+  panoId = id; panoName = name
+  for (const b of [$('#panoView'), $('#panoFull')]) { b.disabled = false; b.textContent = b.dataset.label }
+  return pano.open(id)
+}
+
+// "Guardar esta vista": lo que está dentro del marco, en 4:3.
+$('#panoView').onclick = async (e) => {
+  const btn = e.currentTarget
+  if (btn.disabled) return
+  btn.disabled = true; btn.textContent = 'Preparando…'
+  try {
+    const blob = await pano.snapshot()
+    if (!blob) throw new Error('sin imagen')
+    const n = (btn.count = (btn.count || 0) + 1)
+    btn.disabled = false
+    await saveFile(btn, new File([blob], `La-Cima-de-la-13-${panoName}-vista-${n}.jpg`, { type: 'image/jpeg' }), btn.dataset.label)
+  } catch (err) {
+    btn.textContent = 'No se pudo: inténtalo otra vez'
+  } finally {
+    btn.disabled = false
+    setTimeout(() => { if (!btn.disabled) btn.textContent = btn.dataset.label }, 2500)
+  }
+}
+
+// "Descargar la 360": la foto 360 completa (con los datos de foto esférica:
+// Google Fotos y la galería la abren como 360).
+$('#panoFull').onclick = async (e) => {
+  const btn = e.currentTarget
+  if (btn.disabled || !panoId) return
+  try {
+    if (!blobs.has(panoId)) { btn.disabled = true; btn.textContent = 'Descargando…' }
+    const file = await fetchFile(panoId, `La-Cima-de-la-13-${panoName}-360.jpg`)
+    btn.disabled = false
+    await saveFile(btn, file, btn.dataset.label)
+  } catch (err) {
+    btn.textContent = btn.dataset.label
+    location.href = CFG.download + panoId
+  } finally {
+    btn.disabled = false
+  }
+}
 
 poll()
 </script>
