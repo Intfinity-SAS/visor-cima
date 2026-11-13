@@ -2,5 +2,5 @@
 // página en Google Cloud → Credenciales). Es pública por diseño: solo lee
 // carpetas que ya son públicas con el enlace.
 window.VISOR = {
-  apiKey: '',
+  apiKey: 'AIzaSyDGZOYf2vbWUmVTYZCNMJEwJLxwryhWvfE',
 }
