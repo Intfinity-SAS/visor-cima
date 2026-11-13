@@ -164,7 +164,14 @@ const pano = (() => {
     const r = c.getBoundingClientRect(), k = Math.min(devicePixelRatio || 1, 2)
     c.width = Math.max(1, Math.round(r.width * k)); c.height = Math.max(1, Math.round(r.height * k)); dirty = true
   }
-  function draw() {
+  let last = 0
+  function draw(t) {
+    // Inercia: después de soltar el dedo sigue girando y frena solo.
+    const dt = Math.min(50, last ? t - last : 16); last = t
+    if (!pts.size && (Math.abs(vel.yaw) > 0.002 || Math.abs(vel.pitch) > 0.002)) {
+      look(vel.yaw * dt, vel.pitch * dt)
+      const f = Math.exp(-dt / FRICTION_MS); vel.yaw *= f; vel.pitch *= f
+    }
     if (ready && dirty) {
       g.viewport(0, 0, c.width, c.height)
       g.uniform1f(U.yaw, view.yaw * Math.PI / 180)
@@ -179,11 +186,21 @@ const pano = (() => {
   addEventListener('resize', () => { if (ready) resize() })
 
   // Un dedo (o el mouse) mira alrededor; dos dedos o la rueda acercan.
+  // GAIN: grados por píxel respecto a "la foto pegada al dedo". Con 1, en un
+  // celular vertical un barrido de lado a lado gira ~40° (había que barrer
+  // nueve veces para dar la vuelta); con el dedo va más rápido que con mouse.
+  const GAIN_TOUCH = 2.2, GAIN_MOUSE = 1.3, FRICTION_MS = 320
   const pts = new Map()
   let drag = null, pinch = null
+  const vel = { yaw: 0, pitch: 0 } // grados por ms
+  function look(dyaw, dpitch) {
+    view.yaw = (view.yaw + dyaw) % 360
+    view.pitch = Math.max(-89, Math.min(89, view.pitch + dpitch)); dirty = true
+  }
+  function startDrag(e) { drag = { x: e.clientX, y: e.clientY, t: e.timeStamp }; vel.yaw = vel.pitch = 0 }
   c.addEventListener('pointerdown', (e) => {
     c.setPointerCapture(e.pointerId); pts.set(e.pointerId, e)
-    if (pts.size === 1) drag = { x: e.clientX, y: e.clientY, yaw: view.yaw, pitch: view.pitch }
+    if (pts.size === 1) startDrag(e)
     if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), fov: view.fov }; drag = null }
   })
   c.addEventListener('pointermove', (e) => {
@@ -194,15 +211,26 @@ const pano = (() => {
       const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
       view.fov = Math.max(30, Math.min(120, pinch.fov * pinch.d / Math.max(d, 1))); dirty = true
     } else if (drag) {
-      const k = view.fov / c.getBoundingClientRect().height
-      view.yaw = drag.yaw - (e.clientX - drag.x) * k
-      view.pitch = Math.max(-89, Math.min(89, drag.pitch + (e.clientY - drag.y) * k)); dirty = true
+      // Paso a paso desde el último punto, para que no salte al pasar de dos dedos a uno.
+      const k = view.fov / c.getBoundingClientRect().height * (e.pointerType === 'mouse' ? GAIN_MOUSE : GAIN_TOUCH)
+      const dy = -(e.clientX - drag.x) * k, dp = (e.clientY - drag.y) * k
+      look(dy, dp)
+      const dt = Math.max(1, e.timeStamp - drag.t)
+      // Velocidad suavizada de los últimos movimientos (para la inercia al soltar).
+      vel.yaw = 0.6 * (dy / dt) + 0.4 * vel.yaw; vel.pitch = 0.6 * (dp / dt) + 0.4 * vel.pitch
+      drag = { x: e.clientX, y: e.clientY, t: e.timeStamp }
     }
   })
-  const up = (e) => { pts.delete(e.pointerId); if (pts.size < 2) pinch = null; if (!pts.size) drag = null }
+  const up = (e) => {
+    pts.delete(e.pointerId)
+    if (pts.size < 2) pinch = null
+    if (pts.size === 1) { startDrag([...pts.values()][0]); return } // de pellizco a un dedo: sigue moviendo
+    // Si el dedo se quedó quieto antes de soltar, no hay inercia.
+    if (!pts.size) { if (drag && e.timeStamp - drag.t > 80) vel.yaw = vel.pitch = 0; drag = null }
+  }
   c.addEventListener('pointerup', up); c.addEventListener('pointercancel', up)
   c.addEventListener('wheel', (e) => { e.preventDefault(); view.fov = Math.max(30, Math.min(120, view.fov * Math.exp(e.deltaY * 0.001))); dirty = true }, { passive: false })
-  c.addEventListener('dblclick', () => { view = { ...START }; dirty = true })
+  c.addEventListener('dblclick', () => { view = { ...START }; vel.yaw = vel.pitch = 0; dirty = true })
 
   let gen = 0
   return {
@@ -229,7 +257,7 @@ const pano = (() => {
         }
         g.bindTexture(g.TEXTURE_2D, tex)
         g.texImage2D(g.TEXTURE_2D, 0, g.RGB, g.RGB, g.UNSIGNED_BYTE, pic)
-        view = { ...START }; ready = true; dirty = true
+        view = { ...START }; vel.yaw = vel.pitch = 0; ready = true; dirty = true
         hint.textContent = 'Arrastra para mirar alrededor · pellizca para acercar'
       } catch (e) {
         if (my === gen) hint.textContent = 'No se pudo cargar la 360. Inténtalo de nuevo.'
