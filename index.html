@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Tus fotos del mirador</title>
+<!--
+  Página pública de fotos con visor 360. El QR de "Enviar" abre
+  <esta página>#<carpeta de Drive de la tanda> (Config.ViewerURL, ver
+  server/drive.go). Lee la carpeta con la API de Drive y una clave de API
+  (config.js): las carpetas ya son públicas con el enlace. Las fotos son
+  foto-NN.jpg y, de la Insta360, su 360 foto-NN.360.jpg (4096×2048).
+-->
+<style>
+  :root { --bg:#0e0f12; --fg:#f2f2f2; --dim:#a4a7ae; --card:#1a1c21; --accent:#ffb400; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  header { padding:20px 16px 8px; }
+  h1 { margin:0; font-size:22px; }
+  #status { color:var(--dim); margin:4px 0 0; font-size:14px; }
+  #grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:10px; padding:12px 16px 32px; }
+  .card { background:var(--card); border-radius:10px; overflow:hidden; display:flex; flex-direction:column; }
+  .card img { width:100%; aspect-ratio:4/3; object-fit:cover; display:block; background:#222; cursor:zoom-in; }
+  .acts { display:flex; flex-direction:column; gap:6px; padding:8px; }
+  .acts a, .acts button { flex:1; text-align:center; font:inherit; font-size:14px; padding:8px 4px; border-radius:8px; border:0; text-decoration:none; color:var(--fg); background:#2a2d34; cursor:pointer; }
+  .acts .b360 { background:var(--accent); color:#111; font-weight:600; }
+  .over { position:fixed; inset:0; background:#000; display:none; z-index:10; }
+  .over.on { display:block; }
+  .over canvas, .over .big { width:100%; height:100%; display:block; touch-action:none; }
+  .over .big { object-fit:contain; }
+  .close { position:absolute; top:max(12px,env(safe-area-inset-top)); right:12px; z-index:2; font-size:16px; padding:10px 14px; border-radius:20px; border:0; background:rgba(0,0,0,.6); color:#fff; }
+  .hint { position:absolute; left:0; right:0; bottom:max(16px,env(safe-area-inset-bottom)); text-align:center; color:#fff; font-size:14px; text-shadow:0 1px 3px #000; pointer-events:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Tus fotos del mirador</h1>
+  <p id="status">Cargando tus fotos…</p>
+</header>
+<main id="grid"></main>
+
+<div class="over" id="photo"><button class="close" data-close>Cerrar</button><img class="big" alt=""></div>
+<div class="over" id="pano"><button class="close" data-close>Cerrar</button><canvas></canvas><div class="hint" id="panoHint"></div></div>
+
+<script src="config.js"></script>
+<script>
+'use strict'
+const CFG = Object.assign({
+  apiKey: '',
+  api: 'https://www.googleapis.com/drive/v3',
+  thumb: 'https://drive.google.com/thumbnail',
+  download: 'https://drive.google.com/uc?export=download&id=',
+}, window.VISOR || {})
+const folder = decodeURIComponent(location.hash.slice(1)).replace(/[^A-Za-z0-9_-]/g, '')
+const $ = (s) => document.querySelector(s)
+const status = (t) => { $('#status').textContent = t }
+
+// ---------- lista de la carpeta ----------
+async function list() {
+  const q = `'${folder}' in parents and trashed = false`
+  const u = `${CFG.api}/files?q=${encodeURIComponent(q)}&fields=files(id,name)&orderBy=name&pageSize=200&key=${encodeURIComponent(CFG.apiKey)}`
+  const r = await fetch(u)
+  if (!r.ok) throw new Error('HTTP ' + r.status)
+  return (await r.json()).files || []
+}
+
+const shown = new Map() // "foto-01" → tarjeta
+function render(files) {
+  const photos = {}, panos = {}
+  for (const f of files) {
+    const m = /^(foto-\d+)(\.360)?\.jpg$/.exec(f.name)
+    if (!m) continue
+    if (m[2]) panos[m[1]] = f.id; else photos[m[1]] = f.id
+  }
+  for (const name of Object.keys(photos).sort()) {
+    let card = shown.get(name)
+    if (!card) {
+      card = document.createElement('div')
+      card.className = 'card'
+      card.innerHTML = `<img alt="Foto" loading="lazy"><div class="acts"><a download>Descargar</a></div>`
+      const img = card.querySelector('img')
+      img.src = `${CFG.thumb}?id=${photos[name]}&sz=w800`
+      img.onclick = () => openPhoto(photos[name])
+      card.querySelector('a').href = CFG.download + photos[name]
+      $('#grid').append(card)
+      shown.set(name, card)
+    }
+    if (panos[name] && !card.querySelector('.b360')) {
+      const b = document.createElement('button')
+      b.className = 'b360'
+      b.textContent = 'Ver en 360°'
+      b.onclick = () => openPano(panos[name])
+      card.querySelector('.acts').prepend(b)
+    }
+  }
+  return Object.keys(photos).length
+}
+
+// Las fotos suben de a una después del QR: se revisa la carpeta un rato.
+async function poll() {
+  if (!folder) { status('Este enlace no trae fotos. Escanea otra vez el código QR.'); return }
+  const until = Date.now() + 15 * 60 * 1000
+  let last = -1, fails = 0
+  while (Date.now() < until) {
+    try {
+      const n = render(await list())
+      fails = 0
+      if (n !== last) status(n ? `${n} ${n === 1 ? 'foto' : 'fotos'}. Si faltan, van llegando solas.` : 'Tus fotos se están subiendo; aparecen aquí en un momento.')
+      last = n
+    } catch (e) {
+      if (++fails >= 3 && last < 0) status('No se pudieron cargar las fotos. Revisa tu conexión y vuelve a abrir el enlace.')
+    }
+    await new Promise((r) => setTimeout(r, 8000))
+  }
+}
+
+// ---------- foto grande ----------
+function openPhoto(id) {
+  const o = $('#photo')
+  o.querySelector('img').src = `${CFG.thumb}?id=${id}&sz=w2000`
+  o.classList.add('on')
+}
+document.querySelectorAll('[data-close]').forEach((b) => b.onclick = () => {
+  b.parentElement.classList.remove('on')
+  if (b.parentElement.id === 'pano') pano.stop()
+})
+
+// ---------- visor 360 (mismo cálculo que web/src/Pano360.jsx) ----------
+const pano = (() => {
+  const c = $('#pano canvas')
+  let g, U, tex, raf = 0, ready = false, dirty = true
+  const START = { yaw: 0, pitch: 0, fov: 90 }
+  let view = { ...START }
+  const VS = 'attribute vec2 p; varying vec2 v; void main(){ v=p; gl_Position=vec4(p,0.,1.); }'
+  const FS = `precision highp float; varying vec2 v; uniform sampler2D tex; uniform float yaw, pitch, tanHalf, aspect;
+    const float PI = 3.14159265358979;
+    void main(){
+      vec3 d = normalize(vec3(v.x*tanHalf*aspect, v.y*tanHalf, 1.0));
+      float cp=cos(pitch), sp=sin(pitch); d = vec3(d.x, d.y*cp + d.z*sp, -d.y*sp + d.z*cp);
+      float cy=cos(yaw), sy=sin(yaw); d = vec3(d.x*cy + d.z*sy, d.y, -d.x*sy + d.z*cy);
+      float lon = atan(d.x, d.z), lat = asin(clamp(d.y,-1.,1.));
+      gl_FragColor = texture2D(tex, vec2(lon/(2.*PI)+0.5, 0.5-lat/PI));
+    }`
+  function init() {
+    if (g) return true
+    g = c.getContext('webgl', { antialias: false })
+    if (!g) return false
+    const sh = (t, s) => { const x = g.createShader(t); g.shaderSource(x, s); g.compileShader(x); return x }
+    const prog = g.createProgram()
+    g.attachShader(prog, sh(g.VERTEX_SHADER, VS)); g.attachShader(prog, sh(g.FRAGMENT_SHADER, FS))
+    g.linkProgram(prog); g.useProgram(prog)
+    g.bindBuffer(g.ARRAY_BUFFER, g.createBuffer())
+    g.bufferData(g.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), g.STATIC_DRAW)
+    const loc = g.getAttribLocation(prog, 'p')
+    g.enableVertexAttribArray(loc); g.vertexAttribPointer(loc, 2, g.FLOAT, false, 0, 0)
+    tex = g.createTexture(); g.bindTexture(g.TEXTURE_2D, tex)
+    for (const [k, v] of [[g.TEXTURE_MIN_FILTER, g.LINEAR], [g.TEXTURE_MAG_FILTER, g.LINEAR], [g.TEXTURE_WRAP_S, g.CLAMP_TO_EDGE], [g.TEXTURE_WRAP_T, g.CLAMP_TO_EDGE]]) g.texParameteri(g.TEXTURE_2D, k, v)
+    U = {}
+    for (const n of ['yaw', 'pitch', 'tanHalf', 'aspect']) U[n] = g.getUniformLocation(prog, n)
+    return true
+  }
+  function resize() {
+    const r = c.getBoundingClientRect(), k = Math.min(devicePixelRatio || 1, 2)
+    c.width = Math.max(1, Math.round(r.width * k)); c.height = Math.max(1, Math.round(r.height * k)); dirty = true
+  }
+  function draw() {
+    if (ready && dirty) {
+      g.viewport(0, 0, c.width, c.height)
+      g.uniform1f(U.yaw, view.yaw * Math.PI / 180)
+      g.uniform1f(U.pitch, view.pitch * Math.PI / 180)
+      g.uniform1f(U.tanHalf, Math.tan(view.fov * Math.PI / 360))
+      g.uniform1f(U.aspect, c.width / c.height)
+      g.drawArrays(g.TRIANGLE_STRIP, 0, 4)
+      dirty = false
+    }
+    raf = requestAnimationFrame(draw)
+  }
+  addEventListener('resize', () => { if (ready) resize() })
+
+  // Un dedo (o el mouse) mira alrededor; dos dedos o la rueda acercan.
+  const pts = new Map()
+  let drag = null, pinch = null
+  c.addEventListener('pointerdown', (e) => {
+    c.setPointerCapture(e.pointerId); pts.set(e.pointerId, e)
+    if (pts.size === 1) drag = { x: e.clientX, y: e.clientY, yaw: view.yaw, pitch: view.pitch }
+    if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = { d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), fov: view.fov }; drag = null }
+  })
+  c.addEventListener('pointermove', (e) => {
+    if (!pts.has(e.pointerId)) return
+    pts.set(e.pointerId, e)
+    if (pinch && pts.size === 2) {
+      const [a, b] = [...pts.values()]
+      const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+      view.fov = Math.max(30, Math.min(120, pinch.fov * pinch.d / Math.max(d, 1))); dirty = true
+    } else if (drag) {
+      const k = view.fov / c.getBoundingClientRect().height
+      view.yaw = drag.yaw - (e.clientX - drag.x) * k
+      view.pitch = Math.max(-89, Math.min(89, drag.pitch + (e.clientY - drag.y) * k)); dirty = true
+    }
+  })
+  const up = (e) => { pts.delete(e.pointerId); if (pts.size < 2) pinch = null; if (!pts.size) drag = null }
+  c.addEventListener('pointerup', up); c.addEventListener('pointercancel', up)
+  c.addEventListener('wheel', (e) => { e.preventDefault(); view.fov = Math.max(30, Math.min(120, view.fov * Math.exp(e.deltaY * 0.001))); dirty = true }, { passive: false })
+  c.addEventListener('dblclick', () => { view = { ...START }; dirty = true })
+
+  let gen = 0
+  return {
+    async open(id) {
+      const my = ++gen
+      const hint = $('#panoHint')
+      $('#pano').classList.add('on')
+      ready = false
+      if (!init()) { hint.textContent = 'Este celular no puede mostrar la 360.'; return }
+      resize()
+      cancelAnimationFrame(raf); raf = requestAnimationFrame(draw)
+      hint.textContent = 'Cargando la 360…'
+      try {
+        const r = await fetch(`${CFG.api}/files/${id}?alt=media&key=${encodeURIComponent(CFG.apiKey)}`)
+        if (!r.ok) throw new Error('HTTP ' + r.status)
+        const bmp = await createImageBitmap(await r.blob())
+        if (my !== gen) return
+        let pic = bmp
+        const max = g.getParameter(g.MAX_TEXTURE_SIZE)
+        if (bmp.width > max) {
+          const cv = document.createElement('canvas')
+          cv.width = max; cv.height = Math.round(max * bmp.height / bmp.width)
+          cv.getContext('2d').drawImage(bmp, 0, 0, cv.width, cv.height); pic = cv
+        }
+        g.bindTexture(g.TEXTURE_2D, tex)
+        g.texImage2D(g.TEXTURE_2D, 0, g.RGB, g.RGB, g.UNSIGNED_BYTE, pic)
+        view = { ...START }; ready = true; dirty = true
+        hint.textContent = 'Arrastra para mirar alrededor · pellizca para acercar'
+      } catch (e) {
+        if (my === gen) hint.textContent = 'No se pudo cargar la 360. Inténtalo de nuevo.'
+      }
+    },
+    stop() { gen++; cancelAnimationFrame(raf); ready = false },
+  }
+})()
+const openPano = (id) => pano.open(id)
+
+poll()
+</script>
+</body>
+</html>
