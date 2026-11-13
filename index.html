@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
@@ -10,35 +10,52 @@
   <esta página>#<carpeta de Drive de la tanda> (Config.ViewerURL, ver
   server/drive.go). Lee la carpeta con la API de Drive y una clave de API
   (config.js): las carpetas ya son públicas con el enlace. Las fotos son
-  foto-NN.jpg y, de la Insta360, su 360 foto-NN.360.jpg (4096×2048).
+  foto-NN.jpg y, de la Insta360, su 360 foto-NN.360.jpg (6144×3072).
 -->
 <style>
-  :root { --bg:#0e0f12; --fg:#f2f2f2; --dim:#a4a7ae; --card:#1a1c21; --accent:#ffb400; }
+  /* Colores del logo de La Cima de la 13: verde-gris pizarra (#24393b, las
+     letras y el faro) sobre blanco, con sus grises. Nada fuera de eso. */
+  :root { --logo:#24393b; --bg:#0f1b1c; --card:#1a2a2c; --card2:#26393b; --fg:#f4f7f7; --dim:#9fb2b2; --accent:#ffffff; --on-accent:#24393b; }
   * { box-sizing:border-box; }
   html,body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
-  header { padding:20px 16px 8px; }
+  header { padding:20px 16px 8px; display:flex; align-items:center; gap:14px; }
+  header .logo { width:64px; height:64px; border-radius:14px; background:#fff; object-fit:cover; flex:none; }
   h1 { margin:0; font-size:22px; }
-  #status { color:var(--dim); margin:4px 0 0; font-size:14px; }
+  .brand { margin:0 0 2px; color:var(--dim); font-size:13px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; }
+  #status { color:var(--dim); margin:4px 0 0; font-size:14px; display:flex; align-items:center; gap:8px; }
+  /* "En vivo": la carpeta es reciente y se revisa cada pocos segundos. */
+  #status.live::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--fg); box-shadow:0 0 0 3px rgba(255,255,255,.18); flex:none; animation:pulse 1.4s infinite; }
+  @keyframes pulse { 50% { opacity:.25; } }
+  .card.new { animation:arrive .5s ease-out; }
+  @keyframes arrive { from { opacity:0; transform:translateY(8px); } }
+  footer { text-align:center; color:var(--dim); font-size:13px; padding:0 16px 28px; }
+  footer img { width:40px; height:40px; border-radius:10px; background:#fff; object-fit:cover; display:block; margin:0 auto 6px; }
   #grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:10px; padding:12px 16px 32px; }
   .card { background:var(--card); border-radius:10px; overflow:hidden; display:flex; flex-direction:column; }
-  .card img { width:100%; aspect-ratio:4/3; object-fit:cover; display:block; background:#222; cursor:zoom-in; }
+  .card img { width:100%; aspect-ratio:4/3; object-fit:cover; display:block; background:var(--card2); cursor:zoom-in; }
   .acts { display:flex; flex-direction:column; gap:6px; padding:8px; }
-  .acts a, .acts button { flex:1; text-align:center; font:inherit; font-size:14px; padding:8px 4px; border-radius:8px; border:0; text-decoration:none; color:var(--fg); background:#2a2d34; cursor:pointer; }
-  .acts .b360 { background:var(--accent); color:#111; font-weight:600; }
-  .over { position:fixed; inset:0; background:#000; display:none; z-index:10; }
+  .acts a, .acts button { flex:1; text-align:center; font:inherit; font-size:14px; padding:8px 4px; border-radius:8px; border:0; text-decoration:none; color:var(--fg); background:var(--card2); cursor:pointer; }
+  /* Como el logo: blanco con letras verde-gris. */
+  .acts .b360 { background:var(--accent); color:var(--on-accent); font-weight:700; }
+  .over { position:fixed; inset:0; background:#0a1213; display:none; z-index:10; }
   .over.on { display:block; }
   .over canvas, .over .big { width:100%; height:100%; display:block; touch-action:none; }
   .over .big { object-fit:contain; }
-  .close { position:absolute; top:max(12px,env(safe-area-inset-top)); right:12px; z-index:2; font-size:16px; padding:10px 14px; border-radius:20px; border:0; background:rgba(0,0,0,.6); color:#fff; }
+  .close { position:absolute; top:max(12px,env(safe-area-inset-top)); right:12px; z-index:2; font-size:16px; font-weight:600; padding:10px 14px; border-radius:20px; border:0; background:rgba(255,255,255,.92); color:var(--on-accent); }
   .hint { position:absolute; left:0; right:0; bottom:max(16px,env(safe-area-inset-bottom)); text-align:center; color:#fff; font-size:14px; text-shadow:0 1px 3px #000; pointer-events:none; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Tus fotos del mirador</h1>
-  <p id="status">Cargando tus fotos…</p>
+  <img class="logo" src="logo.jpg" alt="La Cima de la 13">
+  <div>
+    <p class="brand">La Cima de la 13</p>
+    <h1>Tus fotos del mirador</h1>
+    <p id="status">Cargando tus fotos…</p>
+  </div>
 </header>
 <main id="grid"></main>
+<footer><img src="logo.jpg" alt="">Gracias por visitar La Cima de la 13</footer>
 
 <div class="over" id="photo"><button class="close" data-close>Cerrar</button><img class="big" alt=""></div>
 <div class="over" id="pano"><button class="close" data-close>Cerrar</button><canvas></canvas><div class="hint" id="panoHint"></div></div>
@@ -77,12 +94,16 @@ function render(files) {
     let card = shown.get(name)
     if (!card) {
       card = document.createElement('div')
-      card.className = 'card'
-      card.innerHTML = `<img alt="Foto" loading="lazy"><div class="acts"><a download>Descargar</a></div>`
+      card.className = firstPaint ? 'card' : 'card new' // las que llegan después aparecen con animación
+      card.innerHTML = `<img alt="Foto" loading="lazy"><div class="acts"><button class="dl">Descargar</button></div>`
       const img = card.querySelector('img')
       img.src = `${CFG.thumb}?id=${photos[name]}&sz=w800`
+      // Recién subida, Google tarda unos segundos en tener la miniatura: se reintenta.
+      let tries = 0
+      img.onerror = () => { if (++tries <= 8) setTimeout(() => { img.src = `${CFG.thumb}?id=${photos[name]}&sz=w800&r=${tries}` }, 3000) }
       img.onclick = () => openPhoto(photos[name])
-      card.querySelector('a').href = CFG.download + photos[name]
+      const dl = card.querySelector('.dl')
+      dl.onclick = () => download(dl, photos[name], name)
       $('#grid').append(card)
       shown.set(name, card)
     }
@@ -97,21 +118,96 @@ function render(files) {
   return Object.keys(photos).length
 }
 
-// Las fotos suben de a una después del QR: se revisa la carpeta un rato.
+// Las fotos suben de a una después del QR (las 360 pueden tardar hasta ~5 min
+// en pegarse). Mientras la carpeta tenga menos de LIVE_MIN minutos se revisa
+// cada LIVE_EVERY ("en vivo": aparecen solas apenas suben); una carpeta vieja
+// se carga una vez y no se le sigue preguntando a Google.
+const LIVE_MIN = 10, LIVE_EVERY = 3000
+let firstPaint = true
+async function created() {
+  try {
+    const r = await fetch(`${CFG.api}/files/${folder}?fields=createdTime&supportsAllDrives=true&key=${encodeURIComponent(CFG.apiKey)}`)
+    if (r.ok) return new Date((await r.json()).createdTime).getTime()
+  } catch (e) {}
+  return Date.now() // sin saberlo, se trata como recién creada
+}
+const plural = (n) => `${n} ${n === 1 ? 'foto' : 'fotos'}`
+let wake = null // para revisar ya al volver a la pestaña
+document.addEventListener('visibilitychange', () => { if (!document.hidden && wake) wake() })
 async function poll() {
   if (!folder) { status('Este enlace no trae fotos. Escanea otra vez el código QR.'); return }
-  const until = Date.now() + 15 * 60 * 1000
+  const until = (await created()) + LIVE_MIN * 60 * 1000
   let last = -1, fails = 0
-  while (Date.now() < until) {
+  for (;;) {
+    const live = Date.now() < until
     try {
       const n = render(await list())
+      firstPaint = false
       fails = 0
-      if (n !== last) status(n ? `${n} ${n === 1 ? 'foto' : 'fotos'}. Si faltan, van llegando solas.` : 'Tus fotos se están subiendo; aparecen aquí en un momento.')
+      if (n !== last || !live) {
+        status(live
+          ? (n ? `${plural(n)} · ¡estamos subiendo tus fotos, van apareciendo aquí solas!` : '¡Estamos subiendo tus fotos! Aparecen aquí en un momento')
+          : (n ? plural(n) : 'Todavía no hay fotos aquí.'))
+        $('#status').classList.toggle('live', live)
+      }
       last = n
     } catch (e) {
       if (++fails >= 3 && last < 0) status('No se pudieron cargar las fotos. Revisa tu conexión y vuelve a abrir el enlace.')
     }
-    await new Promise((r) => setTimeout(r, 8000))
+    if (!live && last >= 0) return
+    // En segundo plano no se pregunta: al volver a la pestaña se revisa enseguida.
+    await new Promise((r) => {
+      wake = r
+      if (!document.hidden) setTimeout(r, live ? LIVE_EVERY : 30000)
+    })
+    wake = null
+  }
+}
+
+// ---------- descargar al celular, en calidad completa ----------
+// El archivo original de Drive (por la API, como la 360), no la página de
+// Drive. En iPhone se abre el menú de compartir ("Guardar imagen" la deja en
+// Fotos; un enlace normal la mandaría a Archivos); en Android y en el
+// computador se descarga directo. Si algo falla, se abre el enlace de Drive.
+const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+const blobs = new Map() // id → File ya bajado (el segundo toque no vuelve a bajarlo)
+async function download(btn, id, name) {
+  if (btn.disabled) return
+  const label = 'Descargar'
+  let file = blobs.get(id)
+  try {
+    if (!file) {
+      btn.disabled = true
+      btn.textContent = 'Descargando…'
+      const r = await fetch(`${CFG.api}/files/${id}?alt=media&key=${encodeURIComponent(CFG.apiKey)}`)
+      if (!r.ok) throw new Error('HTTP ' + r.status)
+      file = new File([await r.blob()], `La-Cima-de-la-13-${name}.jpg`, { type: 'image/jpeg' })
+      blobs.set(id, file)
+    }
+    if (isIOS && navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file] })
+        btn.textContent = '¡Guardada!'
+      } catch (e) {
+        // Safari solo abre el menú justo después de un toque: si la descarga
+        // tardó, hace falta tocar otra vez (ya está bajada: es instantáneo).
+        btn.textContent = e.name === 'AbortError' ? label : 'Toca para guardar en Fotos'
+      }
+    } else {
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(file)
+      a.download = file.name
+      document.body.append(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000)
+      btn.textContent = '¡Descargada!'
+    }
+  } catch (e) {
+    btn.textContent = label
+    location.href = CFG.download + id // respaldo: el enlace de Drive
+  } finally {
+    btn.disabled = false
   }
 }
 
