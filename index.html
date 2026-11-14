@@ -40,7 +40,10 @@
   .over { position:fixed; inset:0; background:#0a1213; display:none; z-index:10; }
   .over.on { display:block; }
   .over canvas, .over .big { width:100%; height:100%; display:block; touch-action:none; }
-  .over .big { object-fit:contain; }
+  .over .big { object-fit:contain; transform-origin:center center; will-change:transform; }
+  #photo { overflow:hidden; touch-action:none; }
+  #photo.zoomed .zoomhint { opacity:0; }
+  .zoomhint { transition:opacity .3s; pointer-events:none; }
   .close { position:absolute; top:max(12px,env(safe-area-inset-top)); right:12px; z-index:2; font-size:16px; font-weight:600; padding:10px 14px; border-radius:20px; border:0; background:rgba(255,255,255,.92); color:var(--on-accent); }
   .hint { position:absolute; left:0; right:0; bottom:calc(max(16px,env(safe-area-inset-bottom)) + 62px); text-align:center; color:#fff; font-size:14px; text-shadow:0 1px 3px #000; pointer-events:none; padding:0 16px; }
   /* Marco 4:3 de "Guardar esta vista": lo de adentro es lo que se guarda; afuera, más oscuro. */
@@ -64,7 +67,7 @@
 <main id="grid"></main>
 <footer><img src="logo.jpg" alt="">Gracias por visitar La Cima de la 13</footer>
 
-<div class="over" id="photo"><button class="close" data-close>Cerrar</button><img class="big" alt=""></div>
+<div class="over" id="photo"><button class="close" data-close>Cerrar</button><img class="big" alt=""><div class="hint zoomhint">Pellizca o toca dos veces para acercar</div></div>
 <div class="over" id="pano"><button class="close" data-close>Cerrar</button><canvas></canvas>
   <div class="frame43" id="panoFrame"></div>
   <div class="hint" id="panoHint"></div>
@@ -232,10 +235,70 @@ async function download(btn, id, name) {
 }
 
 // ---------- foto grande ----------
+// Pellizcar, doble toque, rueda del mouse y arrastrar para moverse. Al
+// acercar se pide la foto más grande (Drive la entrega hasta ~4000 px).
+const zoom = (() => {
+  const o = $('#photo'), img = o.querySelector('img')
+  let z = 1, x = 0, y = 0, id = '', big = false
+  const pts = new Map()
+  let pinch = null, drag = null, lastTap = 0
+  const apply = () => {
+    // Que la foto no se salga del todo de la pantalla.
+    const r = o.getBoundingClientRect()
+    const mx = (r.width * (z - 1)) / 2, my = (r.height * (z - 1)) / 2
+    x = Math.max(-mx, Math.min(mx, x)); y = Math.max(-my, Math.min(my, y))
+    img.style.transform = `translate(${x}px, ${y}px) scale(${z})`
+    o.classList.toggle('zoomed', z > 1.01)
+    if (z > 1.4 && !big && id) { big = true; const hi = new Image(); hi.onload = () => { if (big) img.src = hi.src }; hi.src = `${CFG.thumb}?id=${id}&sz=w4000` }
+  }
+  // Acercar a z manteniendo quieto el punto (cx, cy) de la pantalla.
+  const zoomAt = (nz, cx, cy) => {
+    nz = Math.max(1, Math.min(6, nz))
+    const r = o.getBoundingClientRect()
+    const px = cx - r.left - r.width / 2, py = cy - r.top - r.height / 2
+    x = px - (px - x) * (nz / z); y = py - (py - y) * (nz / z); z = nz
+    apply()
+  }
+  const reset = () => { z = 1; x = 0; y = 0; apply() }
+  o.addEventListener('wheel', (e) => { e.preventDefault(); zoomAt(z * Math.exp(-e.deltaY * 0.002), e.clientX, e.clientY) }, { passive: false })
+  o.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return
+    o.setPointerCapture(e.pointerId)
+    pts.set(e.pointerId, e)
+    if (pts.size === 2) {
+      const [a, b] = [...pts.values()]
+      pinch = { d: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), z }
+      drag = null
+    } else {
+      drag = { x: e.clientX, y: e.clientY }
+      const now = e.timeStamp
+      if (now - lastTap < 300) { z > 1.01 ? reset() : zoomAt(2.5, e.clientX, e.clientY); lastTap = 0 } else lastTap = now
+    }
+  })
+  o.addEventListener('pointermove', (e) => {
+    if (!pts.has(e.pointerId)) return
+    pts.set(e.pointerId, e)
+    if (pinch && pts.size === 2) {
+      const [a, b] = [...pts.values()]
+      const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
+      zoomAt(pinch.z * d / Math.max(pinch.d, 1), (a.clientX + b.clientX) / 2, (a.clientY + b.clientY) / 2)
+    } else if (drag && z > 1.01) {
+      x += e.clientX - drag.x; y += e.clientY - drag.y
+      drag = { x: e.clientX, y: e.clientY }
+      apply()
+    }
+  })
+  const up = (e) => { pts.delete(e.pointerId); if (pts.size < 2) pinch = null; if (!pts.size) drag = null }
+  o.addEventListener('pointerup', up)
+  o.addEventListener('pointercancel', up)
+  return {
+    open(newId) { id = newId; big = false; img.src = `${CFG.thumb}?id=${id}&sz=w2000`; reset() },
+  }
+})()
+
 function openPhoto(id) {
-  const o = $('#photo')
-  o.querySelector('img').src = `${CFG.thumb}?id=${id}&sz=w2000`
-  o.classList.add('on')
+  zoom.open(id)
+  $('#photo').classList.add('on')
 }
 document.querySelectorAll('[data-close]').forEach((b) => b.onclick = () => {
   b.parentElement.classList.remove('on')
@@ -246,13 +309,18 @@ document.querySelectorAll('[data-close]').forEach((b) => b.onclick = () => {
 const pano = (() => {
   const c = $('#pano canvas')
   let g, U, tex, raf = 0, ready = false, dirty = true
-  const START = { yaw: 0, pitch: 0, fov: 90 }
+  const START = { yaw: 0, pitch: 0, fov: 100 }
+  const FOV_MIN = 30, FOV_MAX = 170 // alejar hasta 170°: la vista guardada abarca mucho más
   let view = { ...START }
+  // Escala de la proyección estereográfica para ver fov grados de alto.
+  const stereoK = (fov) => 2 * Math.tan(fov * Math.PI / 720)
   const VS = 'attribute vec2 p; varying vec2 v; void main(){ v=p; gl_Position=vec4(p,0.,1.); }'
   const FS = `precision highp float; varying vec2 v; uniform sampler2D tex; uniform float yaw, pitch, tanHalf, aspect;
     const float PI = 3.14159265358979;
     void main(){
-      vec3 d = normalize(vec3(v.x*tanHalf*aspect, v.y*tanHalf, 1.0));
+      vec2 q = vec2(v.x*tanHalf*aspect, v.y*tanHalf);
+      float r = length(q), th = 2.0*atan(0.5*r);
+      vec3 d = r > 1e-6 ? vec3(q/r*sin(th), cos(th)) : vec3(0.0, 0.0, 1.0);
       float cp=cos(pitch), sp=sin(pitch); d = vec3(d.x, d.y*cp + d.z*sp, -d.y*sp + d.z*cp);
       float cy=cos(yaw), sy=sin(yaw); d = vec3(d.x*cy + d.z*sy, d.y, -d.x*sy + d.z*cy);
       float lon = atan(d.x, d.z), lat = asin(clamp(d.y,-1.,1.));
@@ -292,7 +360,7 @@ const pano = (() => {
       g.viewport(0, 0, c.width, c.height)
       g.uniform1f(U.yaw, view.yaw * Math.PI / 180)
       g.uniform1f(U.pitch, view.pitch * Math.PI / 180)
-      g.uniform1f(U.tanHalf, Math.tan(view.fov * Math.PI / 360))
+      g.uniform1f(U.tanHalf, stereoK(view.fov))
       g.uniform1f(U.aspect, c.width / c.height)
       g.drawArrays(g.TRIANGLE_STRIP, 0, 4)
       dirty = false
@@ -325,7 +393,7 @@ const pano = (() => {
     if (pinch && pts.size === 2) {
       const [a, b] = [...pts.values()]
       const d = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY)
-      view.fov = Math.max(30, Math.min(120, pinch.fov * pinch.d / Math.max(d, 1))); dirty = true
+      view.fov = Math.max(FOV_MIN, Math.min(FOV_MAX, pinch.fov * pinch.d / Math.max(d, 1))); dirty = true
     } else if (drag) {
       // Paso a paso desde el último punto, para que no salte al pasar de dos dedos a uno.
       const k = view.fov / c.getBoundingClientRect().height * (e.pointerType === 'mouse' ? GAIN_MOUSE : GAIN_TOUCH)
@@ -345,7 +413,7 @@ const pano = (() => {
     if (!pts.size) { if (drag && e.timeStamp - drag.t > 80) vel.yaw = vel.pitch = 0; drag = null }
   }
   c.addEventListener('pointerup', up); c.addEventListener('pointercancel', up)
-  c.addEventListener('wheel', (e) => { e.preventDefault(); view.fov = Math.max(30, Math.min(120, view.fov * Math.exp(e.deltaY * 0.001))); dirty = true }, { passive: false })
+  c.addEventListener('wheel', (e) => { e.preventDefault(); view.fov = Math.max(FOV_MIN, Math.min(FOV_MAX, view.fov * Math.exp(e.deltaY * 0.001))); dirty = true }, { passive: false })
   c.addEventListener('dblclick', () => { view = { ...START }; vel.yaw = vel.pitch = 0; dirty = true })
 
   // snapshot: la parte de la 360 que está dentro del marco 4:3 (#panoFrame),
@@ -355,8 +423,8 @@ const pano = (() => {
   function snapshot() {
     if (!ready) return Promise.resolve(null)
     const fr = $('#panoFrame').getBoundingClientRect(), cr = c.getBoundingClientRect()
-    const tanHalf = Math.tan(view.fov * Math.PI / 360) * (fr.height / cr.height) // el marco ve menos que la pantalla
-    const horiz = 2 * Math.atan(tanHalf * 4 / 3) * 180 / Math.PI // grados que cubre a lo ancho
+    const tanHalf = stereoK(view.fov) * (fr.height / cr.height) // el marco ve menos que la pantalla
+    const horiz = 4 * Math.atan(tanHalf * 4 / 3 / 2) * 180 / Math.PI // grados que cubre a lo ancho
     const maxDim = Math.min(g.getParameter(g.MAX_RENDERBUFFER_SIZE), g.getParameter(g.MAX_VIEWPORT_DIMS)[0], 4096)
     const W = Math.max(1200, Math.min(maxDim, Math.round(texW * horiz / 360 * 1.25 / 4) * 4)), H = Math.round(W * 3 / 4)
     const rt = g.createTexture(); g.bindTexture(g.TEXTURE_2D, rt)
