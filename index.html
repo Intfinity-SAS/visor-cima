@@ -82,13 +82,49 @@ const CFG = Object.assign({
   api: 'https://www.googleapis.com/drive/v3',
   thumb: 'https://drive.google.com/thumbnail',
   download: 'https://drive.google.com/uc?export=download&id=',
+  r2: '', // dirección pública del bucket de Cloudflare R2 (config.js)
 }, window.VISOR || {})
-const folder = decodeURIComponent(location.hash.slice(1)).replace(/[^A-Za-z0-9_-]/g, '')
+// "#<carpeta de Drive>" o, desde que el envío va por Cloudflare R2,
+// "#r/<carpeta>" (server/r2.go): ahí la carpeta trae index.json con la lista
+// y cada foto va en tres tamaños (foto-NN.thumb.jpg 1280 px, foto-NN.web.jpg
+// 4K y foto-NN.jpg completa), porque R2 no hace miniaturas como Drive.
+const rawHash = decodeURIComponent(location.hash.slice(1))
+const isR2 = rawHash.startsWith('r/')
+const folder = (isR2 ? rawHash.slice(2) : rawHash).replace(/[^A-Za-z0-9_-]/g, '')
+const r2Base = CFG.r2.replace(/\/+$/, '') + '/' + folder + '/'
+const r2Have = new Set() // archivos que ya están en la carpeta de R2
+// src: dirección de una foto (id = id de Drive, o nombre en R2) a un ancho.
+function src(id, w) {
+  if (!isR2) return `${CFG.thumb}?id=${id}&sz=w${w}`
+  const base = id.replace(/\.jpg$/, '')
+  const pick = w <= 1280 ? ['.thumb', '.web', ''] : w <= 3840 ? ['.web', ''] : ['']
+  const ext = pick.find((p) => r2Have.has(base + p + '.jpg')) ?? ''
+  return r2Base + base + ext + '.jpg'
+}
+// La completa; en R2, si todavía no terminó de subir, la de 4K.
+const fileURL = (id) => (isR2 ? (r2Have.has(id) || !/^foto-\d+\.jpg$/.test(id) ? r2Base + id : src(id, 3840)) :`${CFG.api}/files/${id}?alt=media&key=${encodeURIComponent(CFG.apiKey)}`)
+const fallbackURL = (id) => (isR2 ? r2Base + id : CFG.download + id)
 const $ = (s) => document.querySelector(s)
 const status = (t) => { $('#status').textContent = t }
 
 // ---------- lista de la carpeta ----------
+let r2Created = 0
 async function list() {
+  if (isR2) {
+    const r = await fetch(`${r2Base}index.json?t=${Date.now()}`, { cache: 'no-store' })
+    if (r.status === 404) return [] // recién creada: todavía no hay nada
+    if (!r.ok) throw new Error('HTTP ' + r.status)
+    const idx = await r.json()
+    if (idx.created) r2Created = new Date(idx.created).getTime()
+    const files = []
+    for (const name of idx.files || []) {
+      r2Have.add(name)
+      // La foto aparece apenas sube su miniatura (la completa llega después).
+      const m = /^(foto-\d+)\.(thumb|web)\.jpg$/.exec(name)
+      files.push({ id: m ? m[1] + '.jpg' : name, name: m ? m[1] + '.jpg' : name })
+    }
+    return files
+  }
   const q = `'${folder}' in parents and trashed = false`
   const u = `${CFG.api}/files?q=${encodeURIComponent(q)}&fields=files(id,name)&orderBy=name&pageSize=200&key=${encodeURIComponent(CFG.apiKey)}`
   const r = await fetch(u)
@@ -111,10 +147,10 @@ function render(files) {
       card.className = firstPaint ? 'card' : 'card new' // las que llegan después aparecen con animación
       card.innerHTML = `<img alt="Foto" loading="lazy"><div class="acts"><button class="dl">Descargar</button></div>`
       const img = card.querySelector('img')
-      img.src = `${CFG.thumb}?id=${photos[name]}&sz=w800`
+      img.src = src(photos[name], 800)
       // Recién subida, Google tarda unos segundos en tener la miniatura: se reintenta.
       let tries = 0
-      img.onerror = () => { if (++tries <= 8) setTimeout(() => { img.src = `${CFG.thumb}?id=${photos[name]}&sz=w800&r=${tries}` }, 3000) }
+      img.onerror = () => { if (++tries <= 8) setTimeout(() => { img.src = src(photos[name], 800) + (isR2 ? '?r=' : '&r=') + tries }, 3000) }
       img.onclick = () => openPhoto(photos[name])
       const dl = card.querySelector('.dl')
       dl.onclick = () => download(dl, photos[name], name)
@@ -139,6 +175,10 @@ function render(files) {
 const LIVE_MIN = 10, LIVE_EVERY = 3000
 let firstPaint = true
 async function created() {
+  if (isR2) {
+    try { await list() } catch (e) {}
+    return r2Created || Date.now()
+  }
   try {
     const r = await fetch(`${CFG.api}/files/${folder}?fields=createdTime&supportsAllDrives=true&key=${encodeURIComponent(CFG.apiKey)}`)
     if (r.ok) return new Date((await r.json()).createdTime).getTime()
@@ -149,7 +189,7 @@ const plural = (n) => `${n} ${n === 1 ? 'foto' : 'fotos'}`
 let wake = null // para revisar ya al volver a la pestaña
 document.addEventListener('visibilitychange', () => { if (!document.hidden && wake) wake() })
 async function poll() {
-  if (!folder) { status('Este enlace no trae fotos. Escanea otra vez el código QR.'); return }
+  if (!folder || (isR2 && !CFG.r2)) { status('Este enlace no trae fotos. Escanea otra vez el código QR.'); return }
   const until = (await created()) + LIVE_MIN * 60 * 1000
   let last = -1, fails = 0
   for (;;) {
@@ -188,7 +228,7 @@ const blobs = new Map() // id → File ya bajado (el segundo toque no vuelve a b
 async function fetchFile(id, filename) {
   let file = blobs.get(id)
   if (!file) {
-    const r = await fetch(`${CFG.api}/files/${id}?alt=media&key=${encodeURIComponent(CFG.apiKey)}`)
+    const r = await fetch(fileURL(id))
     if (!r.ok) throw new Error('HTTP ' + r.status)
     file = new File([await r.blob()], filename, { type: 'image/jpeg' })
     blobs.set(id, file)
@@ -228,7 +268,7 @@ async function download(btn, id, name) {
     await saveFile(btn, file, label)
   } catch (e) {
     btn.textContent = label
-    location.href = CFG.download + id // respaldo: el enlace de Drive
+    location.href = fallbackURL(id) // respaldo: el enlace directo
   } finally {
     btn.disabled = false
   }
@@ -249,7 +289,7 @@ const zoom = (() => {
     x = Math.max(-mx, Math.min(mx, x)); y = Math.max(-my, Math.min(my, y))
     img.style.transform = `translate(${x}px, ${y}px) scale(${z})`
     o.classList.toggle('zoomed', z > 1.01)
-    if (z > 1.4 && !big && id) { big = true; const hi = new Image(); hi.onload = () => { if (big) img.src = hi.src }; hi.src = `${CFG.thumb}?id=${id}&sz=w4000` }
+    if (z > 1.4 && !big && id) { big = true; const hi = new Image(); hi.onload = () => { if (big) img.src = hi.src }; hi.src = src(id, 4000) }
   }
   // Acercar a z manteniendo quieto el punto (cx, cy) de la pantalla.
   const zoomAt = (nz, cx, cy) => {
@@ -292,7 +332,7 @@ const zoom = (() => {
   o.addEventListener('pointerup', up)
   o.addEventListener('pointercancel', up)
   return {
-    open(newId) { id = newId; big = false; img.src = `${CFG.thumb}?id=${id}&sz=w2000`; reset() },
+    open(newId) { id = newId; big = false; img.src = src(id, 2000); reset() },
   }
 })()
 
@@ -525,7 +565,7 @@ $('#panoFull').onclick = async (e) => {
     await saveFile(btn, file, btn.dataset.label)
   } catch (err) {
     btn.textContent = btn.dataset.label
-    location.href = CFG.download + panoId
+    location.href = fallbackURL(panoId)
   } finally {
     btn.disabled = false
   }
