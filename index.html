@@ -89,7 +89,9 @@ const CFG = Object.assign({
 // y cada foto va en tres tamaños (foto-NN.thumb.jpg 1280 px, foto-NN.web.jpg
 // 4K y foto-NN.jpg completa), porque R2 no hace miniaturas como Drive.
 const rawHash = decodeURIComponent(location.hash.slice(1))
-const isR2 = rawHash.startsWith('r/')
+// let: un enlace viejo de Drive (#<id>) cuyas fotos se pasaron a R2 con el
+// mismo id también se lee de R2 (poll lo revisa al empezar).
+let isR2 = rawHash.startsWith('r/')
 const folder = (isR2 ? rawHash.slice(2) : rawHash).replace(/[^A-Za-z0-9_-]/g, '')
 const r2Base = CFG.r2.replace(/\/+$/, '') + '/' + folder + '/'
 const r2Have = new Set() // archivos que ya están en la carpeta de R2
@@ -190,6 +192,12 @@ let wake = null // para revisar ya al volver a la pestaña
 document.addEventListener('visibilitychange', () => { if (!document.hidden && wake) wake() })
 async function poll() {
   if (!folder || (isR2 && !CFG.r2)) { status('Este enlace no trae fotos. Escanea otra vez el código QR.'); return }
+  if (!isR2 && CFG.r2) {
+    try {
+      const r = await fetch(`${r2Base}index.json?t=${Date.now()}`, { cache: 'no-store' })
+      if (r.ok) isR2 = true
+    } catch (e) {}
+  }
   const until = (await created()) + LIVE_MIN * 60 * 1000
   let last = -1, fails = 0
   for (;;) {
